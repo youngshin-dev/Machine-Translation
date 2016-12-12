@@ -1,149 +1,83 @@
 #!/usr/bin/env python
-import optparse
-import sys
-import models
-import math
-import logging
+# Simple translation model and language model data structures
 import gzip
-import time
+import sys
+from collections import namedtuple
 
-# Some utility functions:
-def bitmap(sequence):
-  """ Generate a coverage bitmap for a sequence of indexes """
-  return reduce(lambda x,y: x|y, map(lambda i: long('1'+'0'*i,2), sequence), 0)
-
-def bitmap2str(b, n, on='o', off='.'):
-  """ Generate a length-n string representation of bitmap b """
-  return '' if n==0 else (on if b&1==1 else off) + bitmap2str(b>>1, n-1, on, off)
-
-def onbits(b):
-  """ Count number of on bits in a bitmap """
-  return 0 if b==0 else (1 if b&1==1 else 0) + onbits(b>>1)
-
-def prefix1bits(b):
-  """ Count number of bits encountered before first 0 """
-  return 0 if b&1==0 else 1+prefix1bits(b>>1)
-
-def last1bit(b):
-  """ Return index of highest order bit that is on """
-  return 0 if b==0 else 1+last1bit(b>>1)
-
-def logadd10(x,y):
-  """ Addition in logspace (base 10): if x=log(a) and y=log(b), returns log(a+b) """
-  return x + math.log10(1 + pow(10,y-x))
-
-optparser = optparse.OptionParser()
-optparser.add_option("-i", "--input", dest="input", default="data/final_prj_data/test/all.cn-en.cn", help="File containing sentences to translate (default=data/input)")
-#optparser.add_option("-t", "--translation-model", dest="tm", default="data/final_prj_data/large/phrase-table/test-filtered/rules_cnt.final.out", help="File containing translation model (default=data/tm)")
-#optparser.add_option("-t", "--translation-model", dest="tm", default="data/final_prj_data/large/phrase-table/dev-filtered/rules_cnt.final.out", help="File containing translation model (default=data/tm)")
-#optparser.add_option("-l", "--language-model", dest="lm", default="data/final_prj_data/lm/en.gigaword.3g.filtered.train_dev_test.arpa.gz", help="File containing ARPA-format language model (default=data/lm)")
-optparser.add_option("-t", "--translation-model", dest="tm", default="data/final_prj_data/toy/phrase-table/phrase_table.out", help="File containing translation model (default=data/tm)")
-optparser.add_option("-l", "--language-model", dest="lm", default="data/final_prj_data/lm/en.tiny.3g.arpa", help="File containing ARPA-format language model (default=data/lm)")
-
-optparser.add_option("-v", "--verbosity", dest="verbosity", default=1, type="int", help="Verbosity level, 0-3 (default=1)")
-optparser.add_option("-o", "--logfile", dest="logfile", default=None, help="filename for logging output")
-opts = optparser.parse_args()[0]
-
-if opts.logfile:
-    logging.basicConfig(filename=opts.logfile, filemode='w', level=logging.INFO)
-
-print "Scoring starts"
-scoring_start = time.time()
-
-tm = models.TM(opts.tm,sys.maxint)
-lm = models.LM(opts.lm)
-french = [tuple(line.strip().split()) for line in open(opts.input).readlines()]
-english = [tuple(line.strip().split()) for line in sys.stdin]
-
-# tm should translate unknown words as-is with probability 1
-for word in set(sum(french,())):
-  if (word,) not in tm:
-    tm[(word,)] = [models.phrase(word, 0.0)]
-
-def maybe_write(s, verbosity):
-  if opts.logfile:
-    logging.info(s)
-  if opts.verbosity > verbosity:
-    sys.stdout.write(s)
-    sys.stdout.flush()
-
-maybe_write("Aligning...\n",0)
-maybe_write("NOTE: TM logprobs may be positive since they do not include segmentation\n",0)
-total_logprob = 0.0
-unaligned_sentences = 0
-for sent_num, (f, e) in enumerate(zip(french, english)):
-  maybe_write("===========================================================\n",1)
-  maybe_write("SENTENCE PAIR:\n%s\n%s\n" % (" ".join(f), " ".join(e)),0)
-
-  maybe_write("\nLANGUAGE MODEL SCORES:\n",1)
-  lm_state = lm.begin()
-  lm_logprob = 0.0
-  for word in e + ("</s>",):
-    maybe_write("%s: " % " ".join(lm_state + (word,)),1)
-    (lm_state, word_logprob) = lm.score(lm_state, word)
-    lm_logprob += word_logprob
-    maybe_write("%f\n" % (word_logprob,),1)
-  maybe_write("TOTAL LM LOGPROB: %f\n" % lm_logprob,0)
-  total_logprob += lm_logprob
-  
-  maybe_write("\nALL POSSIBLE PHRASE-TO-PHRASE ALIGNMENTS:\n",1)
-  alignments = [[] for _ in e]
-  for fi in xrange(len(f)):
-    for fj in xrange(fi+1,len(f)+1):
-      if f[fi:fj] in tm:
-        for phrase in tm[f[fi:fj]]:
-          ephrase = tuple(phrase.english.split())
-          for ei in xrange(len(e)+1-len(ephrase)):
-            ej = ei+len(ephrase)
-            if ephrase == e[ei:ej]:
-              maybe_write("%s ||| %d, %d : %d, %d ||| %s ||| %f\n" % 
-                (" ".join(f[fi:fj]), fi, fj, ei, ej, " ".join(ephrase), phrase.logprob),1)
-              alignments[ei].append((ej, phrase.logprob, fi, fj))
-
-  # Compute sum of probability of all possible alignments by dynamic programming.
-  # To do this, recursively compute the sum over all possible alignments for each
-  # each pair of English prefix (indexed by ei) and French coverage (indexed by 
-  # bitmap v), working upwards from the base case (ei=0, v=0) [i.e. forward chaining]. 
-  # The final sum is the one obtained for the pair (ei=len(e), v=range(len(f))
-  maybe_write("\nDYNAMIC PROGRAMMING SUM OVER ALIGNMENTS\n",2)
-  chart = [{} for _ in e] + [{}]
-  chart[0][0] = 0.0
-  for ei, sums in enumerate(chart[:-1]):
-    for v in sums:
-      for ej, logprob, fi, fj in alignments[ei]:
-        if bitmap(range(fi,fj)) & v == 0:
-          new_v = bitmap(range(fi,fj)) | v
-          maybe_write("(%d, %s): %f + (%d, %d, %s): %f -> (%d, %s): %f\n" % 
-            (ei, bitmap2str(v,len(f)), sums[v], 
-             ei, ej, bitmap2str(bitmap(range(fi,fj)),len(f)), logprob, 
-             ej, bitmap2str(new_v,len(f)), sums[v]+logprob), 2)
-          if new_v in chart[ej]:
-            chart[ej][new_v] = logadd10(chart[ej][new_v], sums[v]+logprob)
-          else:
-            chart[ej][new_v] = sums[v]+logprob
-    maybe_write(".",0)
-    maybe_write("\n",2)
-  goal = bitmap(range(len(f)))
-  if goal in chart[len(e)]:
-    maybe_write("\nTOTAL TM LOGPROB: %f\n" % chart[len(e)][goal],0)
-    total_logprob += chart[len(e)][goal]
-  else:
-    sys.stdout.write("ERROR: COULD NOT ALIGN SENTENCE %d\n" % sent_num)
-    unaligned_sentences += 1
-  maybe_write("\n\n",2)
-
-sys.stdout.write("\nTotal corpus log probability (LM+TM): %f\n" % (total_logprob))
-
-print "Scoring ends"
-scoring_end = time.time()
-elapsed = scoring_end - scoring_start
-print "Time taken for scoring: ", elapsed, "seconds."
-
-if (len(french) != len(english)):
-  sys.stdout.write("ERROR: French and English files are not the same length! Only complete output can be graded!\n")
-if unaligned_sentences > 0:
-  sys.stdout.write("ERROR: There were %d unaligned sentences! Only sentences that align under the model can be graded!\n" % unaligned_sentences)
-if (len(french) != len(english)) or unaligned_sentences > 0:
-  sys.exit(1) # signal problem to caller
+# A translation model is a dictionary where keys are tuples of French words
+# and values are lists of (english, logprob) named tuples. For instance,
+# the French phrase "que se est" has two translations, represented like so:
+# tm[('que', 'se', 'est')] = [
+#   phrase(english='what has', logprob=-0.301030009985),
+#   phrase(english='what has been', logprob=-0.301030009985)]
+# k is a pruning parameter: only the top k translations are kept for each f.
+phrase = namedtuple("phrase", "english, logprob, features")
 
 
+def TM(filename, k):
+    sys.stderr.write("Reading translation model from %s...\n" % (filename,))
+    tm = {}
+    # openfile = gzip.open(filename, 'r') if filename[-3:] == '.gz' \
+    #           else open(filename, 'r')
+
+    # lines for making toy data work
+    for line in open(filename).readlines():
+        # (f, e, logprobs) = line.strip().split(" ||| ")
+        (f, e, features) = line.strip().split(" ||| ")
+        # lines for making small data work
+        # for line in gzip.open(filename).readlines():
+        #  (f, e, logprobs, dummy) = line.strip().split(" ||| ")
+        # hacky thing
+        features = features.split()
+        # Adde by Sophie : use uniform weight for all 4 features
+        logprob = (float(features[0]) + float(features[1]) + float(features[2]) + float(features[3])) / 4
+        [str(i) for i in features]
+        tm.setdefault(tuple(f.split()), []).append(phrase(e, float(logprob), features))
+    for f in tm:  # prune all but top k translations
+        tm[f].sort(key=lambda x: -x.logprob)
+        del tm[f][k:]
+    return tm
+
+
+# # A language model scores sequences of English words, and must account
+# # for both beginning and end of each sequence. Example API usage:
+# lm = models.LM(filename)
+# sentence = "This is a test ."
+# lm_state = lm.begin() # initial state is always <s>
+# logprob = 0.0
+# for word in sentence.split():
+#   (lm_state, word_logprob) = lm.score(lm_state, word)
+#   logprob += word_logprob
+# logprob += lm.end(lm_state) # transition to </s>, can also use lm.score(lm_state, "</s>")[1]
+ngram_stats = namedtuple("ngram_stats", "logprob, backoff")
+
+
+class LM:
+    def __init__(self, filename):
+        sys.stderr.write("Reading language model from %s...\n" % (filename,))
+        self.table = {}
+        # for line in gzip.open(filename):
+        for line in open(filename):
+            entry = line.strip().split("\t")
+            if len(entry) > 1 and entry[0] != "ngram":
+                (logprob, ngram, backoff) = (
+                float(entry[0]), tuple(entry[1].split()), float(entry[2] if len(entry) == 3 else 0.0))
+                self.table[ngram] = ngram_stats(logprob, backoff)
+
+    def begin(self):
+        return ("<s>",)
+
+    def score(self, state, word):
+        ngram = state + (word,)
+        score = 0.0
+        while len(ngram) > 0:
+            if ngram in self.table:
+                return (ngram[-2:], score + self.table[ngram].logprob)
+            else:  # backoff
+                score += self.table[ngram[:-1]].backoff if len(ngram) > 1 else 0.0
+                ngram = ngram[1:]
+        # return ((), score + self.table[("<unk>",)].logprob)
+        return ((), score)
+
+    def end(self, state):
+        return self.score(state, "</s>")[1]
