@@ -56,8 +56,8 @@ class LM:
     def __init__(self, filename):
         sys.stderr.write("Reading language model from %s...\n" % (filename,))
         self.table = {}
-        # for line in gzip.open(filename):
-        for line in open(filename):
+        for line in gzip.open(filename):
+        #for line in open(filename):
             entry = line.strip().split("\t")
             if len(entry) > 1 and entry[0] != "ngram":
                 (logprob, ngram, backoff) = (
