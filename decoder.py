@@ -18,7 +18,7 @@ FUTURE_COST_TRANS = 0.4
 class State:
  
  
-    def __init__(self, phrase, words_used, last_index, predecessor, logprob, lm_state):
+    def __init__(self, phrase, words_used, last_index, predecessor, logprob, lm_state, features):
  
         self.phrase = phrase
  
@@ -31,9 +31,10 @@ class State:
         self.logprob = logprob
  
         self.lm_state = lm_state
+
+        self.features = features
  
- 
-    def create_new_state(self, phrase, lm_state, phrase_start, phrase_end, logprob, distortion_max):
+    def create_new_state(self, phrase, lm_state, phrase_start, phrase_end, logprob, distortion_max, features):
  
         used = [False for _ in range(len(self.words_used))]
  
@@ -64,7 +65,7 @@ class State:
             return False
  
  
-        return State(phrase, used, i, self, logprob, lm_state)
+        return State(phrase, used, i, self, logprob, lm_state, features)
  
  
  
@@ -121,11 +122,11 @@ class State:
         self.logprob += prob
  
  
-    def get_sentance(self):
+    def get_sentance(self,i,winner_feature):
  
         l = self.get_phrase_list()
  
-        return " ".join(l)
+        return str(i)+"|||"+" ".join(l)+"|||"+" ".join(winner_feature)
  
  
     def print_state(self):
@@ -194,8 +195,9 @@ def future_cost_of_phrase(phrase):
 optparser = optparse.OptionParser()
 optparser.add_option("-i", "--input", dest="input", default="data/final_prj_data/test/all.cn-en.cn", help="File containing sentences to translate (default=data/input)")
 #optparser.add_option("-t", "--translation-model", dest="tm", default="data/final_prj_data/large/phrase-table/test-filtered/rules_cnt.final.out", help="File containing translation model (default=data/tm)")
-#optparser.add_option("-l", "--language-model", dest="lm", default="data/final_prj_data/lm/en.gigaword.3g.filtered.train_dev_test.arpa.gz", help="File containing ARPA-format language model (default=data/lm)")
+#optparser.add_option("-t", "--translation-model", dest="tm", default="data/final_prj_data/large/phrase-table/dev-filtered/rules_cnt.final.out", help="File containing translation model (default=data/tm)")
 optparser.add_option("-t", "--translation-model", dest="tm", default="data/final_prj_data/toy/phrase-table/phrase_table.out", help="File containing translation model (default=data/tm)")
+#optparser.add_option("-l", "--language-model", dest="lm", default="data/final_prj_data/lm/en.gigaword.3g.filtered.train_dev_test.arpa.gz", help="File containing ARPA-format language model (default=data/lm)")
 optparser.add_option("-l", "--language-model", dest="lm", default="data/final_prj_data/lm/en.tiny.3g.arpa", help="File containing ARPA-format language model (default=data/lm)")
 
 optparser.add_option("-n", "--num_sentences", dest="num_sents", default=sys.maxint, type="int", help="Number of sentences to decode (default=no limit)")
@@ -213,9 +215,11 @@ french = [tuple(line.strip().split()) for line in open(opts.input).readlines()[:
 for word in set(sum(french,())):
     if (word,) not in tm:
  
-        tm[(word,)] = [models.phrase(word, 0.0)]
+        #tm[(word,)] = [models.phrase(word, 0.0)]
+        tm[(word,)] = [models.phrase(word, 0.0,['0','0','0','0'])]
  
 sys.stderr.write("Decoding %s...\n" % (opts.input,))
+source_num=0
 for f in french:
  
  
@@ -269,7 +273,7 @@ for f in french:
     stacks = [[] for _ in f] + [[]]
  
  
-    initial_hypothesis = State(None, [False for _ in f], 0, None, 0, lm.begin())
+    initial_hypothesis = State(None, [False for _ in f], 0, None, 0, lm.begin(),['0','0','0','0'])
  
     stacks[0].append(initial_hypothesis)
  
@@ -358,7 +362,7 @@ for f in french:
  
                             new_logprob += WEIGHT_DISTORTION * distortion_logprob
  
-                            new_hypothesis = state.create_new_state(phrase, lm_state, s, t, new_logprob, opts.d)
+                            new_hypothesis = state.create_new_state(phrase, lm_state, s, t, new_logprob, opts.d ,phrase.features)
  
                             if not new_hypothesis:
  
@@ -406,6 +410,8 @@ for f in french:
         best_stack = stacks[back]
  
     winner = max(iter(best_stack), key=lambda h: h.logprob)
+
+    winner_feature= winner.features
  
     def extract_english(h):
  
@@ -415,7 +421,7 @@ for f in french:
  
         print "ERROR",
  
-    print winner.get_sentance()
+    print winner.get_sentance(str(source_num),winner_feature)
  
  
     if opts.verbose:
@@ -429,3 +435,6 @@ for f in french:
         sys.stderr.write("LM = %f, TM = %f, Total = %f\n" % 
  
             (winner.logprob - tm_logprob, tm_logprob, winner.logprob))
+
+    #source sentence number
+    source_num=source_num+1

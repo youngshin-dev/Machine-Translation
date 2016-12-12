@@ -5,6 +5,7 @@ import models
 import math
 import logging
 import gzip
+import time
 
 # Some utility functions:
 def bitmap(sequence):
@@ -34,6 +35,7 @@ def logadd10(x,y):
 optparser = optparse.OptionParser()
 optparser.add_option("-i", "--input", dest="input", default="data/final_prj_data/test/all.cn-en.cn", help="File containing sentences to translate (default=data/input)")
 #optparser.add_option("-t", "--translation-model", dest="tm", default="data/final_prj_data/large/phrase-table/test-filtered/rules_cnt.final.out", help="File containing translation model (default=data/tm)")
+#optparser.add_option("-t", "--translation-model", dest="tm", default="data/final_prj_data/large/phrase-table/dev-filtered/rules_cnt.final.out", help="File containing translation model (default=data/tm)")
 #optparser.add_option("-l", "--language-model", dest="lm", default="data/final_prj_data/lm/en.gigaword.3g.filtered.train_dev_test.arpa.gz", help="File containing ARPA-format language model (default=data/lm)")
 optparser.add_option("-t", "--translation-model", dest="tm", default="data/final_prj_data/toy/phrase-table/phrase_table.out", help="File containing translation model (default=data/tm)")
 optparser.add_option("-l", "--language-model", dest="lm", default="data/final_prj_data/lm/en.tiny.3g.arpa", help="File containing ARPA-format language model (default=data/lm)")
@@ -44,6 +46,9 @@ opts = optparser.parse_args()[0]
 
 if opts.logfile:
     logging.basicConfig(filename=opts.logfile, filemode='w', level=logging.INFO)
+
+print "Scoring starts"
+scoring_start = time.time()
 
 tm = models.TM(opts.tm,sys.maxint)
 lm = models.LM(opts.lm)
@@ -128,6 +133,12 @@ for sent_num, (f, e) in enumerate(zip(french, english)):
   maybe_write("\n\n",2)
 
 sys.stdout.write("\nTotal corpus log probability (LM+TM): %f\n" % (total_logprob))
+
+print "Scoring ends"
+scoring_end = time.time()
+elapsed = scoring_end - scoring_start
+print "Time taken for scoring: ", elapsed, "seconds."
+
 if (len(french) != len(english)):
   sys.stdout.write("ERROR: French and English files are not the same length! Only complete output can be graded!\n")
 if unaligned_sentences > 0:
