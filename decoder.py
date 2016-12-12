@@ -4,8 +4,9 @@ import optparse
 import sys
 import models
 from collections import namedtuple
-import gzip
- 
+import multi_bleu
+import bleu
+
 WEIGHT_DISTORTION = 0.5
 WEIGHT_LANG_MODEL = 1
 WEIGHT_TRANS_MODEL = 0.85
@@ -122,11 +123,17 @@ class State:
         self.logprob += prob
  
  
-    def get_sentance(self,i,winner_feature):
+    def get_nbest(self,i,winner_feature):
  
         l = self.get_phrase_list()
  
         return str(i)+"|||"+" ".join(l)+"|||"+" ".join(winner_feature)
+
+    def get_sentence(self):
+
+        l = self.get_phrase_list()
+
+        return " ".join(l)
  
  
     def print_state(self):
@@ -193,24 +200,39 @@ def future_cost_of_phrase(phrase):
  
  
 optparser = optparse.OptionParser()
+#optparser.add_option("-i", "--input", dest="input", default="data/final_prj_data/dev/all.cn-en.cn", help="File containing sentences to translate (default=data/input)")
 optparser.add_option("-i", "--input", dest="input", default="data/final_prj_data/test/all.cn-en.cn", help="File containing sentences to translate (default=data/input)")
 #optparser.add_option("-t", "--translation-model", dest="tm", default="data/final_prj_data/large/phrase-table/test-filtered/rules_cnt.final.out", help="File containing translation model (default=data/tm)")
-optparser.add_option("-t", "--translation-model", dest="tm", default="data/final_prj_data/large/phrase-table/dev-filtered/rules_cnt.final.out", help="File containing translation model (default=data/tm)")
-#optparser.add_option("-t", "--translation-model", dest="tm", default="data/final_prj_data/toy/phrase-table/phrase_table.out", help="File containing translation model (default=data/tm)")
-optparser.add_option("-l", "--language-model", dest="lm", default="data/final_prj_data/lm/en.gigaword.3g.filtered.train_dev_test.arpa.gz", help="File containing ARPA-format language model (default=data/lm)")
-#optparser.add_option("-l", "--language-model", dest="lm", default="data/final_prj_data/lm/en.tiny.3g.arpa", help="File containing ARPA-format language model (default=data/lm)")
+#optparser.add_option("-t", "--translation-model", dest="tm", default="data/final_prj_data/large/phrase-table/dev-filtered/rules_cnt.final.out", help="File containing translation model (default=data/tm)")
+optparser.add_option("-t", "--translation-model", dest="tm", default="data/final_prj_data/toy/phrase-table/phrase_table.out", help="File containing translation model (default=data/tm)")
+#optparser.add_option("-l", "--language-model", dest="lm", default="data/final_prj_data/lm/en.gigaword.3g.filtered.train_dev_test.arpa.gz", help="File containing ARPA-format language model (default=data/lm)")
+optparser.add_option("-l", "--language-model", dest="lm", default="data/final_prj_data/lm/en.tiny.3g.arpa", help="File containing ARPA-format language model (default=data/lm)")
+
+
+optparser.add_option("-a", "--ref0", dest="ref0", default="data/final_prj_data/test/all.cn-en.en0", help="reference")
+optparser.add_option("-b", "--ref1", dest="ref1", default="data/final_prj_data/test/all.cn-en.en1", help="reference")
+optparser.add_option("-c", "--ref2", dest="ref2", default="data/final_prj_data/test/all.cn-en.en2", help="reference")
+optparser.add_option("-e", "--ref3", dest="ref3", default="data/final_prj_data/test/all.cn-en.en3", help="reference")
+
 
 optparser.add_option("-n", "--num_sentences", dest="num_sents", default=sys.maxint, type="int", help="Number of sentences to decode (default=no limit)")
 optparser.add_option("-k", "--translations-per-phrase", dest="k", default=1, type="int", help="Limit on number of translations to consider per phrase (default=1)")
 optparser.add_option("-d", "--distortion-factor", dest="d", default=6, type="int", help="Limit on how far from each other consecutive phrases can start (default=6)")
-optparser.add_option("-s", "--stack-size", dest="s", default=100, type="int", help="Maximum stack size (default=1)")
+optparser.add_option("-s", "--stack-size", dest="s", default=2, type="int", help="Maximum stack size (default=1)")
 optparser.add_option("-v", "--verbose", dest="verbose", action="store_true", default=False, help="Verbose mode (default=off)")
 opts = optparser.parse_args()[0]
  
 tm = models.TM(opts.tm, opts.k)
 lm = models.LM(opts.lm)
 french = [tuple(line.strip().split()) for line in open(opts.input).readlines()[:opts.num_sents]]
- 
+
+ref0 = [line.rstrip('\n') for line in open(opts.ref0)]
+ref1 = [line.rstrip('\n') for line in open(opts.ref1)]
+ref2 = [line.rstrip('\n') for line in open(opts.ref2)]
+ref3 = [line.rstrip('\n') for line in open(opts.ref3)]
+
+references = zip(ref0,ref1,ref2,ref3)
+
 # tm should translate unknown words as-is with probability 1
 for word in set(sum(french,())):
     if (word,) not in tm:
@@ -220,6 +242,11 @@ for word in set(sum(french,())):
  
 sys.stderr.write("Decoding %s...\n" % (opts.input,))
 source_num=0
+Bleu_Score =0
+Bleu_Score_mlti_ref=0
+
+evaluator=multi_bleu.BLEUEvaluator()
+
 for f in french:
  
  
@@ -408,22 +435,50 @@ for f in french:
         back -= 1
  
         best_stack = stacks[back]
- 
+
     winner = max(iter(best_stack), key=lambda h: h.logprob)
 
-    winner_feature= winner.features
+    #winner_feature= winner.features
  
     def extract_english(h):
  
         return "" if h.predecessor is None else "%s%s " % (extract_english(h.predecessor), h.phrase.english)
- 
+
     if back != -1:
  
         print "ERROR",
- 
-    print winner.get_sentance(str(source_num),winner_feature)
- 
- 
+
+    #print winner.get_sentence()
+
+    winner_sentence=winner.get_sentence()
+
+    stats = list(bleu.bleu_stats(winner_sentence, references[source_num][0]))
+    bleu_smooth_score = bleu.smoothed_bleu(stats)
+
+    winner_bleu=evaluator(winner_sentence, list(references[source_num]))
+
+    Bleu_Score_mlti_ref = Bleu_Score_mlti_ref + winner_bleu
+    Bleu_Score = Bleu_Score + bleu_smooth_score
+
+    # source sentence number
+    source_num = source_num + 1
+
+    # This liine is for producing nbest
+    '''
+    for item in best_stack:
+        print item.get_nbest(str(source_num), item.features)
+
+    '''
+print "Averaged bleu score multi ref:"
+print Bleu_Score_mlti_ref/(source_num+1)
+
+print "Averaged bleu score :"
+print Bleu_Score/(source_num+1)
+
+
+
+'''
+
     if opts.verbose:
  
         def extract_tm_logprob(h):
@@ -436,5 +491,7 @@ for f in french:
  
             (winner.logprob - tm_logprob, tm_logprob, winner.logprob))
 
-    #source sentence number
-    source_num=source_num+1
+
+
+
+'''
